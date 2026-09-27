@@ -11,6 +11,7 @@ import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.stream.Collectors;
 
@@ -19,6 +20,7 @@ import java.util.stream.Collectors;
  * {@link ErrorResponse} HTTP payloads.
  *
  *   Validation errors        → 400 Bad Request
+ *   NoResourceFoundException → 404 Not Found
  *   ToolExecutionException   → 422 Unprocessable Entity
  *   VectorStoreException     → 503 Service Unavailable
  *   AgentException           → 500 Internal Server Error
@@ -40,6 +42,15 @@ public class GlobalExceptionHandler {
         log.warn("Validation failed [{}]: {}", req.getRequestURI(), detail);
         return ResponseEntity.badRequest()
                 .body(ErrorResponse.of(400, "Validation Failed", detail, req.getRequestURI()));
+    }
+
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ErrorResponse> handleNoResourceFound(
+            NoResourceFoundException ex, HttpServletRequest req) {
+
+        log.debug("No static resource for [{}]", req.getRequestURI());
+        return ResponseEntity.status(404)
+                .body(ErrorResponse.of(404, "Not Found", "No static resource found", req.getRequestURI()));
     }
 
     @ExceptionHandler(ToolExecutionException.class)

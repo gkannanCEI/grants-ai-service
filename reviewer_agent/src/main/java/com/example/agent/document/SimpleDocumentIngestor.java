@@ -6,6 +6,9 @@ import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.Parser;
+import org.apache.tika.parser.ocr.TesseractOCRConfig;
+import org.apache.tika.parser.pdf.PDFParserConfig;
 import org.apache.tika.sax.BodyContentHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,8 +36,8 @@ public class SimpleDocumentIngestor {
 
     private static final Logger log = LoggerFactory.getLogger(SimpleDocumentIngestor.class);
 
-    // 10 million chars ~ 10 MB of plain text. Increase if you regularly process very large docs.
-    private static final int TIKA_CHAR_LIMIT = 10_000_000;
+    // 2 million chars ~ 4 MB of text. Plenty for document review; caps the parse footprint.
+    private static final int TIKA_CHAR_LIMIT = 2_000_000;
 
     private final InMemoryDocumentStore documentStore;
 
@@ -62,7 +65,7 @@ public class SimpleDocumentIngestor {
 
         // Streams directly from MultipartFile — no full in-memory byte[] copy
         BodyContentHandler handler = new BodyContentHandler(TIKA_CHAR_LIMIT);
-        ParseContext       context  = new ParseContext();
+        ParseContext       context  = buildTextOnlyContext(parser);
 
         try (InputStream stream = file.getInputStream()) {
             parser.parse(stream, handler, metadata, context);
@@ -105,5 +108,33 @@ public class SimpleDocumentIngestor {
                 ? applicationId : InMemoryDocumentStore.DEFAULT_APPLICATION_ID;
 
         return new IngestResult(documentId, effectiveAppId, fileName, mimeType, text.length(), 1, pageCount);
+    }
+
+    /**
+     * Builds a ParseContext tuned for text-only extraction.
+     *
+     * <p>Critically, this disables PDF page image rendering and OCR. Tika's PDF parser can
+     * otherwise rasterize pages into full-resolution {@link java.awt.image.BufferedImage}
+     * buffers (width × height × 4 bytes) — an allocation that can reach hundreds of MB and
+     * trigger {@link OutOfMemoryError} even for a tiny PDF, completely independent of file size.
+     * Since this service only needs the extracted text, image extraction and OCR are turned off.
+     */
+    private ParseContext buildTextOnlyContext(Parser parser) {
+        ParseContext context = new ParseContext();
+
+        PDFParserConfig pdfConfig = new PDFParserConfig();
+        pdfConfig.setExtractInlineImages(false);      // don't pull embedded images into memory
+        pdfConfig.setExtractUniqueInlineImagesOnly(true);
+        pdfConfig.setOcrStrategy(PDFParserConfig.OCR_STRATEGY.NO_OCR); // no page rasterization for OCR
+        context.set(PDFParserConfig.class, pdfConfig);
+
+        TesseractOCRConfig ocrConfig = new TesseractOCRConfig();
+        ocrConfig.setSkipOcr(true);                   // never invoke Tesseract / image rendering
+        context.set(TesseractOCRConfig.class, ocrConfig);
+
+        // Ensure nested/embedded documents are parsed with the same text-only settings.
+        context.set(Parser.class, parser);
+
+        return context;
     }
 }

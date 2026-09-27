@@ -56,19 +56,29 @@ public class DocumentChunker {
         int start      = 0;
         int chunkIndex = 0;
 
-        while (start < normalized.length()) {
-            int end = Math.min(start + chunkSize, normalized.length());
+        int length = normalized.length();
+
+        while (start < length) {
+            int end = Math.min(start + chunkSize, length);
 
             // Try to break at a paragraph or sentence boundary for cleaner chunks
-            if (end < normalized.length()) {
+            if (end < length) {
                 int paragraphBreak = normalized.lastIndexOf("\n\n", end);
                 int sentenceBreak  = normalized.lastIndexOf(". ", end);
                 int bestBreak      = Math.max(paragraphBreak, sentenceBreak);
 
-                // Only use the natural break if it's not too far back
-                if (bestBreak > start + (chunkSize / 2)) {
+                // Only use the natural break if it falls within the current window
+                // (strictly after start and before end). Guarding both bounds prevents
+                // end from being placed before start, which would make substring throw.
+                if (bestBreak > start + (chunkSize / 2) && bestBreak < end) {
                     end = bestBreak + 1;
                 }
+            }
+
+            // Safety: end must be strictly greater than start. For very short or
+            // break-only text the logic above could otherwise yield end <= start.
+            if (end <= start) {
+                end = Math.min(start + chunkSize, length);
             }
 
             String chunkText = normalized.substring(start, end).trim();
@@ -76,9 +86,13 @@ public class DocumentChunker {
                 chunks.add(new DocumentChunk(documentId, chunkIndex++, chunkText, start));
             }
 
-            // Move forward, stepping back by overlap to keep context
-            start = end - overlap;
-            if (start >= normalized.length()) break;
+            // Advance. Step back by overlap to preserve context, but always move
+            // forward by at least one char so start can never go negative or stall.
+            int next = end - overlap;
+            if (next <= start) {
+                next = end;
+            }
+            start = next;
         }
 
         return chunks;

@@ -178,6 +178,11 @@ public class EmbeddingClientImpl implements EmbeddingClient {
         return null;
     }
 
+    // Hard cap on an embedding HTTP response body. A single 3072-dim embedding is well under
+    // ~100 KB; anything beyond this cap indicates an unbounded/streaming/error response and is
+    // aborted before it can exhaust the heap (the SelectorManager-thread OOM we hit otherwise).
+    private static final long MAX_RESPONSE_BYTES = 8L * 1024 * 1024; // 8 MB
+
     private HttpResponse<String> post(String url, String body, String authHeader) throws Exception {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(url))
@@ -189,7 +194,50 @@ public class EmbeddingClientImpl implements EmbeddingClient {
         if (authHeader != null) {
             builder.header("Authorization", authHeader);
         }
-        return httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+
+        // Read the body as a byte stream and enforce a maximum size, rather than
+        // BodyHandlers.ofString() which buffers the entire (possibly unbounded) body.
+        HttpResponse<java.io.InputStream> resp =
+                httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
+
+        byte[] bytes = readBounded(resp.body(), MAX_RESPONSE_BYTES);
+        String text  = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+        log.debug("Embedding HTTP {} — read {} bytes from {}", resp.statusCode(), bytes.length, url);
+
+        // Re-wrap as a String-typed HttpResponse so callers are unchanged.
+        return new StringBodyResponse(resp, text);
+    }
+
+    /** Reads up to {@code maxBytes} from the stream, throwing if the body exceeds the cap. */
+    private byte[] readBounded(java.io.InputStream in, long maxBytes) throws Exception {
+        try (in; java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream()) {
+            byte[] buf = new byte[8192];
+            long total = 0;
+            int n;
+            while ((n = in.read(buf)) != -1) {
+                total += n;
+                if (total > maxBytes) {
+                    throw new AgentException("Embedding response exceeded " + maxBytes
+                            + " bytes and was aborted to protect memory. This usually means the "
+                            + "embedding endpoint returned an unexpected (non-embedding) response.");
+                }
+                out.write(buf, 0, n);
+            }
+            return out.toByteArray();
+        }
+    }
+
+    /** Minimal HttpResponse<String> adapter that reuses the original response's status/headers. */
+    private record StringBodyResponse(HttpResponse<java.io.InputStream> delegate, String bodyText)
+            implements HttpResponse<String> {
+        @Override public int statusCode()                 { return delegate.statusCode(); }
+        @Override public HttpRequest request()            { return delegate.request(); }
+        @Override public java.util.Optional<HttpResponse<String>> previousResponse() { return java.util.Optional.empty(); }
+        @Override public java.net.http.HttpHeaders headers() { return delegate.headers(); }
+        @Override public String body()                    { return bodyText; }
+        @Override public java.util.Optional<javax.net.ssl.SSLSession> sslSession() { return delegate.sslSession(); }
+        @Override public URI uri()                        { return delegate.uri(); }
+        @Override public HttpClient.Version version()     { return delegate.version(); }
     }
 
     private List<Float> parseFloatArray(JsonNode node) {

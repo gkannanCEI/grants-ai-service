@@ -10,6 +10,9 @@ import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.Parser;
+import org.apache.tika.parser.ocr.TesseractOCRConfig;
+import org.apache.tika.parser.pdf.PDFParserConfig;
 import org.apache.tika.sax.BodyContentHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,22 +46,25 @@ public class DocumentIngestor {
 
     private static final Logger log = LoggerFactory.getLogger(DocumentIngestor.class);
 
-    // Tika's BodyContentHandler limit — cap at 10 million chars (~10 MB of text)
-    // to prevent OutOfMemoryError on large documents. Increase if needed.
-    private static final int TIKA_CHAR_LIMIT = 10_000_000;
+    // Tika's BodyContentHandler limit — cap at 2 million chars (~4 MB of text)
+    // to bound the parse footprint. Increase if you regularly process very large docs.
+    private static final int TIKA_CHAR_LIMIT = 2_000_000;
 
     private final DocumentChunker chunker;
     private final EmbeddingClient embeddingClient;
     private final VectorStore     vectorStore;
+    private final int             expectedDimension;
 
     public DocumentIngestor(
             DocumentChunker chunker,
             EmbeddingClient embeddingClient,
-            VectorStore     vectorStore
+            VectorStore     vectorStore,
+            com.example.agent.config.AgentProperties props
     ) {
-        this.chunker         = chunker;
-        this.embeddingClient = embeddingClient;
-        this.vectorStore     = vectorStore;
+        this.chunker           = chunker;
+        this.embeddingClient   = embeddingClient;
+        this.vectorStore       = vectorStore;
+        this.expectedDimension = props.getVector().getDimension();
     }
 
     /**
@@ -98,6 +104,20 @@ public class DocumentIngestor {
         for (DocumentChunk chunk : chunks) {
             List<Float> embedding = embeddingClient.embed(chunk.text());
 
+            // Guard: a malformed/empty embedding or a dimension mismatch with the Milvus
+            // collection is a common cause of huge gRPC buffer allocations (OOM) or silent
+            // corruption. Fail fast with a clear message instead.
+            int actualDim = (embedding == null) ? 0 : embedding.size();
+            log.debug("Embedded chunk {} — dimension={} (expected={})",
+                    chunk.chunkIndex(), actualDim, expectedDimension);
+            if (actualDim != expectedDimension) {
+                throw new ToolExecutionException("ingestDocument",
+                        "Embedding dimension mismatch for chunk " + chunk.chunkIndex()
+                        + ": got " + actualDim + " floats but the Milvus collection expects "
+                        + expectedDimension + ". Check agent.vector.dimension matches the "
+                        + "embedding model output, and that the embedding API call succeeded.");
+            }
+
             vectorDocs.add(VectorDocument.forInsert(
                     documentId + "_chunk_" + chunk.chunkIndex(),
                     chunk.text(),
@@ -135,9 +155,8 @@ public class DocumentIngestor {
         Metadata         metadata = new Metadata();
         metadata.set(TikaCoreProperties.RESOURCE_NAME_KEY, fileName);
 
-        // -1 = no character limit on extracted content
         BodyContentHandler handler = new BodyContentHandler(TIKA_CHAR_LIMIT);
-        ParseContext context = new ParseContext();
+        ParseContext context = buildTextOnlyContext(parser);
 
         try (InputStream stream = file.getInputStream()) {
             parser.parse(stream, handler, metadata, context);
@@ -159,6 +178,28 @@ public class DocumentIngestor {
         }
 
         return new ExtractionResult(text, mimeType, pageCount);
+    }
+
+    /**
+     * Builds a ParseContext tuned for text-only extraction — disables PDF page image rendering
+     * and OCR so Tika does not rasterize pages into large in-memory image buffers (a common
+     * cause of OutOfMemoryError even for tiny PDFs). Only the extracted text is needed here.
+     */
+    private ParseContext buildTextOnlyContext(Parser parser) {
+        ParseContext context = new ParseContext();
+
+        PDFParserConfig pdfConfig = new PDFParserConfig();
+        pdfConfig.setExtractInlineImages(false);
+        pdfConfig.setExtractUniqueInlineImagesOnly(true);
+        pdfConfig.setOcrStrategy(PDFParserConfig.OCR_STRATEGY.NO_OCR);
+        context.set(PDFParserConfig.class, pdfConfig);
+
+        TesseractOCRConfig ocrConfig = new TesseractOCRConfig();
+        ocrConfig.setSkipOcr(true);
+        context.set(TesseractOCRConfig.class, ocrConfig);
+
+        context.set(Parser.class, parser);
+        return context;
     }
 
     /** Internal holder for Tika extraction output. */
