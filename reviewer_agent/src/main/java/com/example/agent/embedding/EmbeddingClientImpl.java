@@ -35,7 +35,7 @@ public class EmbeddingClientImpl implements EmbeddingClient {
     private static final Logger log = LoggerFactory.getLogger(EmbeddingClientImpl.class);
 
     private static final String GEMINI_EMBED_MODEL  = "gemini-embedding-001";
-    private static final String OLLAMA_EMBED_MODEL  = "nomic-embed-text";
+    private static final String OLLAMA_EMBED_MODEL  = "nomic-embed-text:v1.5";
     private static final String OPENAI_EMBED_MODEL  = "text-embedding-3-small";
 
     private static final String GEMINI_DEFAULT_BASE = "https://generativelanguage.googleapis.com";
@@ -56,22 +56,27 @@ public class EmbeddingClientImpl implements EmbeddingClient {
 
     @PostConstruct
     void init() {
-        String model   = props.getModel();
         String baseUrl = props.getProvider().getBaseUrl();
 
-        if (model != null && model.startsWith("ollama/")) {
-            detectedProvider = "ollama";
-            embedModel       = OLLAMA_EMBED_MODEL;
-            providerBaseUrl  = (baseUrl != null && !baseUrl.isBlank()) ? baseUrl : OLLAMA_DEFAULT_BASE;
-        } else if (model != null && (model.startsWith("openai/") || model.startsWith("anthropic/"))) {
-            detectedProvider = "openai";
-            embedModel       = OPENAI_EMBED_MODEL;
-            providerBaseUrl  = (baseUrl != null && !baseUrl.isBlank()) ? baseUrl : OPENAI_DEFAULT_BASE;
-        } else {
-            // Default: Gemini
-            detectedProvider = "gemini";
-            embedModel       = GEMINI_EMBED_MODEL;
-            providerBaseUrl  = GEMINI_DEFAULT_BASE;
+        // Provider is driven by the single agent.provider.type switch
+        // (falling back to the agent.model prefix for backwards compatibility).
+        detectedProvider = com.example.agent.config.LlmModelFactory.resolveProvider(props);
+
+        switch (detectedProvider) {
+            case "ollama" -> {
+                embedModel      = OLLAMA_EMBED_MODEL;
+                providerBaseUrl = (baseUrl != null && !baseUrl.isBlank()) ? baseUrl : OLLAMA_DEFAULT_BASE;
+            }
+            case "openai", "anthropic" -> {
+                detectedProvider = "openai";
+                embedModel       = OPENAI_EMBED_MODEL;
+                providerBaseUrl  = (baseUrl != null && !baseUrl.isBlank()) ? baseUrl : OPENAI_DEFAULT_BASE;
+            }
+            default -> {
+                detectedProvider = "gemini";
+                embedModel       = GEMINI_EMBED_MODEL;
+                providerBaseUrl  = GEMINI_DEFAULT_BASE;
+            }
         }
 
         httpClient = HttpClient.newBuilder()

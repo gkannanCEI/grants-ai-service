@@ -38,13 +38,26 @@
     <dependencies>
 
         <!-- ── Spring Boot ── -->
+        <!-- Exclude the default Logback logging so we can use Log4j2 instead. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-starter-logging</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- ── Logging — Log4j2 (replaces the default Logback) ── -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-log4j2</artifactId>
         </dependency>
 
         <!-- ── Google ADK ── -->
@@ -60,6 +73,33 @@
             <version>1.6.0</version>
         </dependency>
 
+        <!-- ── Persistence — Spring Data JPA + PostgreSQL (primary DB) ── -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-starter-logging</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- ── Flyway — versioned, repeatable DB schema migrations ── -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+
         <!-- ── Apache Tika — universal document text extraction ── -->
         <dependency>
             <groupId>org.apache.tika</groupId>
@@ -73,10 +113,17 @@
         </dependency>
 
         <!-- ── Milvus vector database (Java SDK v2) ── -->
+        <!-- Exclude the SLF4J 1.x binding it drags in; we use Log4j2's slf4j2 binding. -->
         <dependency>
             <groupId>io.milvus</groupId>
             <artifactId>milvus-sdk-java</artifactId>
             <version>${milvus.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.logging.log4j</groupId>
+                    <artifactId>log4j-slf4j-impl</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <!-- ── Jackson — used by OllamaEmbeddingClient HTTP calls ── -->
@@ -85,11 +132,27 @@
             <artifactId>jackson-databind</artifactId>
         </dependency>
 
+        <!-- ── springdoc OpenAPI 3 + Swagger UI (interactive API docs) ──
+             Serves the OpenAPI spec at /v3/api-docs and a live Swagger UI at
+             /swagger-ui.html with a "Try it out" button that sends real
+             requests to the running endpoints. 2.x is the line for Spring Boot 3. -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>2.6.0</version>
+        </dependency>
+
         <!-- ── Test ── -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-starter-logging</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
     </dependencies>
 

@@ -154,21 +154,28 @@ public class DocumentReaderTool implements AgentTool {
     private Map<String, Object> readFromVectorStoreByApplicationId(String applicationId) {
         try {
             List<Float> queryEmbedding = embeddingClient.embed("application document " + applicationId);
-            List<VectorDocument> chunks = vectorStore.search(queryEmbedding, READ_TOP_K);
+            // Use Milvus-side filtering so we only get chunks for this application,
+            // instead of fetching a global topK and filtering in Java (which could
+            // miss the application's chunks entirely).
+            List<VectorDocument> chunks =
+                    vectorStore.search(queryEmbedding, READ_TOP_K, applicationId);
 
             List<VectorDocument> docChunks = chunks.stream()
-                    .filter(d -> d.metadata() != null
-                            && applicationId.equals(d.metadata().get("applicationId")))
+                    .filter(d -> d != null)
                     .sorted((a, b) -> Integer.compare(
                             parseChunkIndex(a.metadata()), parseChunkIndex(b.metadata())))
                     .collect(Collectors.toList());
 
             if (docChunks.isEmpty()) {
                 throw new ToolExecutionException("readDocumentByApplicationId",
-                        "No content found for applicationId=" + applicationId);
+                        "No content found for applicationId=" + applicationId
+                        + ". Make sure a document was indexed for this applicationId "
+                        + "(re-index if it was uploaded before application scoping was enabled).");
             }
 
-            String documentId = docChunks.get(0).metadata().getOrDefault("source", "unknown");
+            Map<String, String> meta0 = docChunks.get(0).metadata();
+            String documentId = (meta0 != null && meta0.get("source") != null)
+                    ? meta0.get("source") : "unknown";
             return buildVectorResult(documentId, docChunks);
         } catch (ToolExecutionException e) {
             throw e;
@@ -179,23 +186,33 @@ public class DocumentReaderTool implements AgentTool {
     }
 
     private Map<String, Object> buildVectorResult(String documentId, List<VectorDocument> docChunks) {
+        // Guard against null chunk content — Collectors.joining throws NPE on nulls.
         String fullText = docChunks.stream()
                 .map(VectorDocument::content)
+                .map(c -> c != null ? c : "")
                 .collect(Collectors.joining("\n\n"));
 
         Map<String, String> meta     = docChunks.get(0).metadata();
-        String fileName              = meta != null ? meta.getOrDefault("fileName",      "unknown") : "unknown";
-        String mimeType              = meta != null ? meta.getOrDefault("mimeType",      "unknown") : "unknown";
-        String applicationId         = meta != null ? meta.getOrDefault("applicationId", "unknown") : "unknown";
+        String fileName              = metaOrDefault(meta, "fileName",      "unknown");
+        String mimeType              = metaOrDefault(meta, "mimeType",      "unknown");
+        String applicationId         = metaOrDefault(meta, "applicationId", "unknown");
 
-        return Map.of(
-                "documentId",    documentId,
-                "applicationId", applicationId,
-                "fileName",      fileName,
-                "mimeType",      mimeType,
-                "fullText",      fullText,
-                "chunkCount",    docChunks.size()
-        );
+        // Use a null-tolerant HashMap rather than Map.of, which rejects null keys/values.
+        Map<String, Object> result = new java.util.HashMap<>();
+        result.put("documentId",    documentId != null ? documentId : "unknown");
+        result.put("applicationId", applicationId);
+        result.put("fileName",      fileName);
+        result.put("mimeType",      mimeType);
+        result.put("fullText",      fullText);
+        result.put("chunkCount",    docChunks.size());
+        return result;
+    }
+
+    /** Like getOrDefault, but also returns the default when the key maps to a null value. */
+    private static String metaOrDefault(Map<String, String> meta, String key, String def) {
+        if (meta == null) return def;
+        String v = meta.get(key);
+        return v != null ? v : def;
     }
 
     private int parseChunkIndex(Map<String, String> metadata) {

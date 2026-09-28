@@ -50,21 +50,24 @@ public class DocumentIngestor {
     // to bound the parse footprint. Increase if you regularly process very large docs.
     private static final int TIKA_CHAR_LIMIT = 2_000_000;
 
-    private final DocumentChunker chunker;
-    private final EmbeddingClient embeddingClient;
-    private final VectorStore     vectorStore;
-    private final int             expectedDimension;
+    private final DocumentChunker  chunker;
+    private final EmbeddingClient  embeddingClient;
+    private final VectorStore      vectorStore;
+    private final DocumentRegistry documentRegistry;
+    private final int              expectedDimension;
 
     public DocumentIngestor(
-            DocumentChunker chunker,
-            EmbeddingClient embeddingClient,
-            VectorStore     vectorStore,
+            DocumentChunker  chunker,
+            EmbeddingClient  embeddingClient,
+            VectorStore      vectorStore,
+            DocumentRegistry documentRegistry,
             com.example.agent.config.AgentProperties props
     ) {
         this.chunker           = chunker;
         this.embeddingClient   = embeddingClient;
         this.vectorStore       = vectorStore;
-        this.expectedDimension = props.getVector().getDimension();
+        this.documentRegistry  = documentRegistry;
+        this.expectedDimension = props.resolveVectorDimension();
     }
 
     /**
@@ -77,6 +80,18 @@ public class DocumentIngestor {
      * @return IngestResult with documentId and ingestion statistics
      */
     public IngestResult ingest(MultipartFile file) {
+        return ingest(file, null);
+    }
+
+    /**
+     * Ingests a document, associating it with the given applicationId so it can
+     * later be listed via the "documents for a session" endpoint.
+     *
+     * @param file          The uploaded file
+     * @param applicationId Business application / session grouping key (null → default)
+     * @return IngestResult with documentId and ingestion statistics
+     */
+    public IngestResult ingest(MultipartFile file, String applicationId) {
         String documentId = UUID.randomUUID().toString();
         String fileName   = file.getOriginalFilename() != null
                             ? file.getOriginalFilename() : "unknown";
@@ -98,6 +113,9 @@ public class DocumentIngestor {
             throw new ToolExecutionException("ingestDocument",
                     "No text could be extracted from: " + fileName);
         }
+
+        String effectiveAppId = (applicationId != null && !applicationId.isBlank())
+                ? applicationId : InMemoryDocumentStore.DEFAULT_APPLICATION_ID;
 
         // 3. Embed and upsert all chunks in batches
         List<VectorDocument> vectorDocs = new ArrayList<>(chunks.size());
@@ -123,11 +141,12 @@ public class DocumentIngestor {
                     chunk.text(),
                     embedding,
                     Map.of(
-                            "source",      documentId,
-                            "fileName",    fileName,
-                            "mimeType",    extraction.mimeType(),
-                            "chunkIndex",  String.valueOf(chunk.chunkIndex()),
-                            "charOffset",  String.valueOf(chunk.charOffset())
+                            "source",        documentId,
+                            "applicationId", effectiveAppId,
+                            "fileName",      fileName,
+                            "mimeType",      extraction.mimeType(),
+                            "chunkIndex",    String.valueOf(chunk.chunkIndex()),
+                            "charOffset",    String.valueOf(chunk.charOffset())
                     )
             ));
         }
@@ -137,15 +156,17 @@ public class DocumentIngestor {
         log.info("Ingestion complete — documentId={} chunks={} stored in Milvus",
                 documentId, vectorDocs.size());
 
-        return new IngestResult(
+        IngestResult result = new IngestResult(
                 documentId,
-                InMemoryDocumentStore.DEFAULT_APPLICATION_ID,
+                effectiveAppId,
                 fileName,
                 extraction.mimeType(),
                 extraction.text().length(),
                 chunks.size(),
                 extraction.pageCount()
         );
+        documentRegistry.register(result);
+        return result;
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────

@@ -16,6 +16,8 @@ public record ChatRequest(
 
         String sessionId,
 
+        String applicationId,
+
         @NotBlank(message = "message must not be blank")
         String message
 ) {}

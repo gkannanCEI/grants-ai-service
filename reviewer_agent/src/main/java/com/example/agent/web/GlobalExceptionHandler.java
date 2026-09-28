@@ -48,9 +48,15 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleNoResourceFound(
             NoResourceFoundException ex, HttpServletRequest req) {
 
-        log.debug("No static resource for [{}]", req.getRequestURI());
+        // These are almost always external probes (e.g. HP printer / device-discovery
+        // scanners hitting /DevMgmt/DiscoveryTree.xml, favicon requests, bots). They are
+        // not app errors — keep them out of normal logs. Only trace-log API paths.
+        String uri = req.getRequestURI();
+        if (uri != null && uri.startsWith("/api")) {
+            log.trace("No static resource for [{}]", uri);
+        }
         return ResponseEntity.status(404)
-                .body(ErrorResponse.of(404, "Not Found", "No static resource found", req.getRequestURI()));
+                .body(ErrorResponse.of(404, "Not Found", "No static resource found", uri));
     }
 
     @ExceptionHandler(ToolExecutionException.class)

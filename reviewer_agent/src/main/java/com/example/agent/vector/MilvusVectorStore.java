@@ -44,18 +44,23 @@ public class MilvusVectorStore implements VectorStore {
 
     private static final Logger log = LoggerFactory.getLogger(MilvusVectorStore.class);
 
-    private static final String FIELD_ID        = "id";
-    private static final String FIELD_CONTENT   = "content";
-    private static final String FIELD_EMBEDDING = "embedding";
-    private static final String FIELD_SOURCE    = "source";
+    private static final String FIELD_ID             = "id";
+    private static final String FIELD_CONTENT        = "content";
+    private static final String FIELD_EMBEDDING      = "embedding";
+    private static final String FIELD_SOURCE         = "source";
+    private static final String FIELD_APPLICATION_ID = "application_id";
 
     private final AgentProperties.Vector config;
+    private final int                    dimension;
     private final Gson                   gson = new Gson();
     private MilvusClientV2               client;
     private boolean                      connected = false;
 
     public MilvusVectorStore(AgentProperties props) {
-        this.config = props.getVector();
+        this.config    = props.getVector();
+        // Resolved dimension honors an explicit agent.vector.dimension, else
+        // derives it from the selected agent.provider.type (gemini/ollama/openai).
+        this.dimension = props.resolveVectorDimension();
     }
 
     @PostConstruct
@@ -94,6 +99,8 @@ public class MilvusVectorStore implements VectorStore {
                 row.addProperty(FIELD_CONTENT, doc.content());
                 row.addProperty(FIELD_SOURCE,  doc.metadata() != null
                         ? doc.metadata().getOrDefault("source", "") : "");
+                row.addProperty(FIELD_APPLICATION_ID, doc.metadata() != null
+                        ? doc.metadata().getOrDefault("applicationId", "") : "");
 
                 // Serialize the float list as a JSON array
                 row.add(FIELD_EMBEDDING, gson.toJsonTree(doc.embedding()));
@@ -113,39 +120,57 @@ public class MilvusVectorStore implements VectorStore {
 
     @Override
     public List<VectorDocument> search(List<Float> queryEmbedding, int topK) {
+        return search(queryEmbedding, topK, null);
+    }
+
+    @Override
+    public List<VectorDocument> search(List<Float> queryEmbedding, int topK, String applicationId) {
         requireConnected();
         try {
             // Milvus v2 SearchReq.data() requires List<BaseVector> — wrap in FloatVec
             List<io.milvus.v2.service.vector.request.data.BaseVector> vectors =
                     List.of(new FloatVec(queryEmbedding));
 
-            SearchResp resp = client.search(SearchReq.builder()
+            SearchReq.SearchReqBuilder<?, ?> builder = SearchReq.builder()
                     .collectionName(config.getCollection())
                     .data(vectors)
                     .annsField(FIELD_EMBEDDING)
                     .topK(topK)
-                    .outputFields(List.of(FIELD_ID, FIELD_CONTENT, FIELD_SOURCE))
-                    .build());
+                    .outputFields(List.of(FIELD_ID, FIELD_CONTENT, FIELD_SOURCE, FIELD_APPLICATION_ID));
+
+            // Scope the search to a single application when requested.
+            if (applicationId != null && !applicationId.isBlank()) {
+                String safe = applicationId.replace("\"", "\\\"");
+                builder.filter(FIELD_APPLICATION_ID + " == \"" + safe + "\"");
+            }
+
+            SearchResp resp = client.search(builder.build());
 
             List<VectorDocument> results = new ArrayList<>();
             for (List<SearchResp.SearchResult> group : resp.getSearchResults()) {
                 for (SearchResp.SearchResult hit : group) {
                     Map<String, Object> entity = hit.getEntity();
-                    String id      = String.valueOf(entity.getOrDefault(FIELD_ID,      ""));
-                    String content = String.valueOf(entity.getOrDefault(FIELD_CONTENT, ""));
-                    String source  = String.valueOf(entity.getOrDefault(FIELD_SOURCE,  ""));
+                    String id      = String.valueOf(entity.getOrDefault(FIELD_ID,             ""));
+                    String content = String.valueOf(entity.getOrDefault(FIELD_CONTENT,        ""));
+                    String source  = String.valueOf(entity.getOrDefault(FIELD_SOURCE,         ""));
+                    String appId   = String.valueOf(entity.getOrDefault(FIELD_APPLICATION_ID, ""));
+
+                    Map<String, String> meta = new java.util.HashMap<>();
+                    meta.put("source", source);
+                    meta.put("applicationId", appId);
 
                     results.add(new VectorDocument(
                             id,
                             content,
                             null,                        // embeddings not returned on search
-                            Map.of("source", source),
+                            meta,
                             (float) hit.getScore()
                     ));
                 }
             }
 
-            log.info("Vector search returned {} results (topK={})", results.size(), topK);
+            log.info("Vector search returned {} results (topK={} applicationId={})",
+                    results.size(), topK, applicationId);
             return results;
         } catch (Exception e) {
             throw new VectorStoreException("Search failed: " + e.getMessage(), e);
@@ -187,11 +212,20 @@ public class MilvusVectorStore implements VectorStore {
                 .collectionName(config.getCollection())
                 .build());
 
+        if (exists && !config.isRecreateOnStartup()) {
+            // Preserve indexed data across restarts. Only recreate when explicitly
+            // requested via agent.vector.recreate-on-startup=true (e.g. after changing
+            // the embedding dimension or the collection schema).
+            log.info("Collection already exists - {} - preserving existing data "
+                    + "(set agent.vector.recreate-on-startup=true to drop and rebuild)",
+                    config.getCollection());
+            return;
+        }
+
         if (exists) {
-            log.info("Collection already exists - {} - dropping and recreating to ensure dimension match (dim={})",
-                    config.getCollection(), config.getDimension());
-            // Drop and recreate to avoid dimension mismatch between old collection and current embedding model.
-            // Safe on startup: if dimensions already match this is a no-op cost, if they don't it prevents OOM.
+            log.warn("Collection already exists - {} - recreate-on-startup=true, DROPPING all "
+                    + "indexed data and rebuilding (dim={})",
+                    config.getCollection(), dimension);
             client.dropCollection(
                     DropCollectionReq.builder()
                             .collectionName(config.getCollection())
@@ -199,7 +233,7 @@ public class MilvusVectorStore implements VectorStore {
             log.info("Dropped existing collection - {}", config.getCollection());
         }
 
-        log.info("Creating collection — {} (dim={})", config.getCollection(), config.getDimension());
+        log.info("Creating collection — {} (dim={})", config.getCollection(), dimension);
 
         CreateCollectionReq.CollectionSchema schema =
                 CreateCollectionReq.CollectionSchema.builder().build();
@@ -214,11 +248,15 @@ public class MilvusVectorStore implements VectorStore {
 
         schema.addField(AddFieldReq.builder()
                 .fieldName(FIELD_EMBEDDING).dataType(DataType.FloatVector)
-                .dimension(config.getDimension()).build());
+                .dimension(dimension).build());
 
         schema.addField(AddFieldReq.builder()
                 .fieldName(FIELD_SOURCE).dataType(DataType.VarChar)
                 .maxLength(1024).build());
+
+        schema.addField(AddFieldReq.builder()
+                .fieldName(FIELD_APPLICATION_ID).dataType(DataType.VarChar)
+                .maxLength(256).build());
 
         IndexParam index = IndexParam.builder()
                 .fieldName(FIELD_EMBEDDING)

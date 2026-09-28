@@ -1,5 +1,9 @@
 package com.example.agent;
 
+import java.nio.file.Path;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -33,7 +37,16 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 @EnableConfigurationProperties
 public class ReviewAgentApplication {
 
+    private static final Logger log = LoggerFactory.getLogger(ReviewAgentApplication.class);
+
     public static void main(String[] args) {
+        // Make the log destination unmistakable at boot. Resolves the same way the
+        // Log4j2 config does: -DLOG_DIR sys prop, then LOG_DIR env var, else "logs".
+        String logDir = System.getProperty("LOG_DIR",
+                System.getenv().getOrDefault("LOG_DIR", "logs"));
+        Path resolved = Path.of(logDir).toAbsolutePath().normalize();
+        log.info("Log4j2: writing logs to {}", resolved);
+
         SpringApplication.run(ReviewAgentApplication.class, args);
     }
 }

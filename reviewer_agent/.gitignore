@@ -1,3 +1,6 @@
 /target
 .kiro
 env.bat
+
+# Log4j2 output
+/logs

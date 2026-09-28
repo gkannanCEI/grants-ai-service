@@ -5,9 +5,11 @@ import jakarta.validation.constraints.NotBlank;
 /**
  * Generic agent request used by {@link com.example.agent.core.AgentRunner}.
  *
- * @param userId    Caller's user identifier (required)
- * @param sessionId Optional — pass a prior sessionId to continue a multi-turn conversation
- * @param message   The user's message or instruction (required)
+ * @param userId        Caller's user identifier (required)
+ * @param sessionId     Optional — pass a prior sessionId to continue a multi-turn conversation
+ * @param applicationId Optional — when present, the agent answers using documents indexed
+ *                      under this application (retrieval is scoped to it)
+ * @param message       The user's message or instruction (required)
  */
 public record AgentRequest(
 
@@ -16,11 +18,13 @@ public record AgentRequest(
 
         String sessionId,
 
+        String applicationId,
+
         @NotBlank(message = "message must not be blank")
         String message
 ) {
     /** Convenience factory for stateless single-turn calls. */
     public static AgentRequest of(String userId, String message) {
-        return new AgentRequest(userId, null, message);
+        return new AgentRequest(userId, null, null, message);
     }
 }

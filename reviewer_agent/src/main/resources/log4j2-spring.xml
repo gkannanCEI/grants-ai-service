@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Log4j2 configuration for the Document Review Agent.
+
+  Log file location (in precedence order):
+    1. -DLOG_DIR=... JVM system property
+    2. LOG_DIR environment variable
+    3. default: a "logs" folder in the process working directory
+
+  Files written:
+    app.log    - all application activity at INFO and above (rolling)
+    error.log  - WARN / ERROR only, for quick problem triage (rolling)
+    debug.log  - full DEBUG for com.example.agent, for deep debugging (rolling)
+    audit.log  - business/audit trail: uploads, ingests, chats, deletions (rolling)
+
+  On startup the resolved directory is printed to the console as:
+    "Log4j2: writing logs to <path>"
+
+  Rolling policy: new file per day OR when a file exceeds the size cap, with a
+  retention cap so the logs directory can't grow unbounded.
+
+  The special "AUDIT" logger is isolated (additivity=false) so audit events go
+  ONLY to audit.log and are never mixed into the general app logs.
+-->
+<Configuration status="WARN">
+
+    <Properties>
+        <!-- Resolve log dir: -DLOG_DIR sys prop, then LOG_DIR env var, else "logs". -->
+        <Property name="LOG_DIR">${sys:LOG_DIR:-${env:LOG_DIR:-logs}}</Property>
+        <Property name="PATTERN">%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%t] %logger{36} - %msg%n</Property>
+        <Property name="AUDIT_PATTERN">%d{yyyy-MM-dd HH:mm:ss.SSS} %msg%n</Property>
+        <Property name="MAX_FILE_SIZE">50MB</Property>
+        <!-- Keep at most this many rolled files per appender. -->
+        <Property name="MAX_ROLLED">30</Property>
+    </Properties>
+
+    <Appenders>
+
+        <!-- Console — for local dev / container stdout -->
+        <Console name="Console" target="SYSTEM_OUT">
+            <PatternLayout pattern="${PATTERN}"/>
+        </Console>
+
+        <!-- All application activity (INFO+) -->
+        <RollingFile name="AppFile"
+                     fileName="${LOG_DIR}/app.log"
+                     filePattern="${LOG_DIR}/app-%d{yyyy-MM-dd}-%i.log.gz">
+            <PatternLayout pattern="${PATTERN}"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
+                <SizeBasedTriggeringPolicy size="${MAX_FILE_SIZE}"/>
+            </Policies>
+            <DefaultRolloverStrategy max="${MAX_ROLLED}"/>
+        </RollingFile>
+
+        <!-- Errors and warnings only -->
+        <RollingFile name="ErrorFile"
+                     fileName="${LOG_DIR}/error.log"
+                     filePattern="${LOG_DIR}/error-%d{yyyy-MM-dd}-%i.log.gz">
+            <PatternLayout pattern="${PATTERN}"/>
+            <ThresholdFilter level="WARN" onMatch="ACCEPT" onMismatch="DENY"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
+                <SizeBasedTriggeringPolicy size="${MAX_FILE_SIZE}"/>
+            </Policies>
+            <DefaultRolloverStrategy max="${MAX_ROLLED}"/>
+        </RollingFile>
+
+        <!-- Full DEBUG detail for our own packages -->
+        <RollingFile name="DebugFile"
+                     fileName="${LOG_DIR}/debug.log"
+                     filePattern="${LOG_DIR}/debug-%d{yyyy-MM-dd}-%i.log.gz">
+            <PatternLayout pattern="${PATTERN}"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
+                <SizeBasedTriggeringPolicy size="${MAX_FILE_SIZE}"/>
+            </Policies>
+            <DefaultRolloverStrategy max="${MAX_ROLLED}"/>
+        </RollingFile>
+
+        <!-- Audit trail — business events only -->
+        <RollingFile name="AuditFile"
+                     fileName="${LOG_DIR}/audit.log"
+                     filePattern="${LOG_DIR}/audit-%d{yyyy-MM-dd}-%i.log.gz">
+            <PatternLayout pattern="${AUDIT_PATTERN}"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
+                <SizeBasedTriggeringPolicy size="${MAX_FILE_SIZE}"/>
+            </Policies>
+            <!-- Keep audit history longer than operational logs. -->
+            <DefaultRolloverStrategy max="90"/>
+        </RollingFile>
+
+    </Appenders>
+
+    <Loggers>
+
+        <!-- Dedicated audit logger — isolated from the app logs. -->
+        <Logger name="AUDIT" level="INFO" additivity="false">
+            <AppenderRef ref="AuditFile"/>
+            <AppenderRef ref="Console"/>
+        </Logger>
+
+        <!-- Our application code: DEBUG to debug.log, INFO+ everywhere else. -->
+        <Logger name="com.example.agent" level="DEBUG" additivity="false">
+            <AppenderRef ref="Console"/>
+            <AppenderRef ref="AppFile"    level="INFO"/>
+            <AppenderRef ref="ErrorFile"/>
+            <AppenderRef ref="DebugFile"  level="DEBUG"/>
+        </Logger>
+
+        <!-- Third-party noise control -->
+        <Logger name="com.google.adk" level="WARN"/>
+        <Logger name="io.milvus"      level="INFO"/>
+        <!-- External scanners / favicon / bots hitting unknown paths -> silence. -->
+        <Logger name="org.springframework.web.servlet.resource.NoResourceFoundException" level="OFF"/>
+        <Logger name="org.springframework.web.servlet.PageNotFound" level="OFF"/>
+
+        <!-- Everything else -->
+        <Root level="INFO">
+            <AppenderRef ref="Console"/>
+            <AppenderRef ref="AppFile"/>
+            <AppenderRef ref="ErrorFile"/>
+        </Root>
+
+    </Loggers>
+
+</Configuration>

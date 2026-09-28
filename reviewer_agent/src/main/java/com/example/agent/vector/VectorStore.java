@@ -27,6 +27,18 @@ public interface VectorStore {
     List<VectorDocument> search(List<Float> queryEmbedding, int topK);
 
     /**
+     * Searches for the top-k most similar documents, restricted to a single
+     * applicationId. When {@code applicationId} is null or blank this behaves
+     * like {@link #search(List, int)} (no filter).
+     *
+     * @param queryEmbedding The embedding vector of the search query
+     * @param topK           Maximum number of results to return
+     * @param applicationId  Restrict results to chunks stored under this application
+     * @return Ranked list of matching documents with similarity scores
+     */
+    List<VectorDocument> search(List<Float> queryEmbedding, int topK, String applicationId);
+
+    /**
      * Deletes a document by its ID.
      *
      * @param id The document ID to delete

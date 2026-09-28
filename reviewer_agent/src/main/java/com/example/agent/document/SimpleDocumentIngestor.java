@@ -40,9 +40,12 @@ public class SimpleDocumentIngestor {
     private static final int TIKA_CHAR_LIMIT = 2_000_000;
 
     private final InMemoryDocumentStore documentStore;
+    private final DocumentRegistry      documentRegistry;
 
-    public SimpleDocumentIngestor(InMemoryDocumentStore documentStore) {
-        this.documentStore = documentStore;
+    public SimpleDocumentIngestor(InMemoryDocumentStore documentStore,
+                                  DocumentRegistry documentRegistry) {
+        this.documentStore    = documentStore;
+        this.documentRegistry = documentRegistry;
     }
 
     /**
@@ -107,7 +110,10 @@ public class SimpleDocumentIngestor {
         String effectiveAppId = (applicationId != null && !applicationId.isBlank())
                 ? applicationId : InMemoryDocumentStore.DEFAULT_APPLICATION_ID;
 
-        return new IngestResult(documentId, effectiveAppId, fileName, mimeType, text.length(), 1, pageCount);
+        IngestResult result =
+                new IngestResult(documentId, effectiveAppId, fileName, mimeType, text.length(), 1, pageCount);
+        documentRegistry.register(result);
+        return result;
     }
 
     /**

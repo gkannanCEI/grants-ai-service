@@ -4,6 +4,7 @@ import com.example.agent.context.ContextManager;
 import com.example.agent.exception.AgentException;
 import com.example.agent.model.AgentRequest;
 import com.example.agent.model.AgentResponse;
+import com.example.agent.retrieval.RetrievalService;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.runner.InMemoryRunner;
@@ -34,15 +35,18 @@ public class BaseAgentRunner implements AgentRunner {
     private final InMemoryRunner      runner;
     private final AgentSessionManager sessionManager;
     private final ContextManager      contextManager;
+    private final RetrievalService    retrievalService;
 
     public BaseAgentRunner(
             BaseAgent            rootAgent,
             AgentSessionManager  sessionManager,
-            ContextManager       contextManager
+            ContextManager       contextManager,
+            RetrievalService     retrievalService
     ) {
-        this.runner         = new InMemoryRunner(rootAgent);
-        this.sessionManager = sessionManager;
-        this.contextManager = contextManager;
+        this.runner           = new InMemoryRunner(rootAgent);
+        this.sessionManager   = sessionManager;
+        this.contextManager   = contextManager;
+        this.retrievalService = retrievalService;
         log.info("BaseAgentRunner ready — agent={}", rootAgent.name());
     }
 
@@ -57,9 +61,15 @@ public class BaseAgentRunner implements AgentRunner {
         String sessionId = session.id();
         log.info("Agent turn — userId={} sessionId={}", request.userId(), sessionId);
 
-        // 2. Enrich message with conversation history
+        // 2a. When an applicationId is provided, ground the message in that
+        //     application's indexed documents (RAG). Otherwise it's a plain chat.
+        String groundedMessage = retrievalService.buildGroundedMessage(
+                request.applicationId(), request.message()
+        );
+
+        // 2b. Enrich with conversation history
         String contextualMessage = contextManager.buildContextualMessage(
-                sessionId, request.message()
+                sessionId, groundedMessage
         );
 
         try {

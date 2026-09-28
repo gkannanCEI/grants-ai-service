@@ -35,6 +35,12 @@ public class LlmModelFactory {
     private static final String OPENAI_DEFAULT_BASE    = "https://api.openai.com/v1";
     private static final String ANTHROPIC_DEFAULT_BASE = "https://api.anthropic.com";
 
+    // Per-provider default chat models — used when agent.model is left blank.
+    private static final String GEMINI_DEFAULT_MODEL    = "gemini-3.6-flash";
+    private static final String OLLAMA_DEFAULT_MODEL    = "ollama/gemma3:1b";
+    private static final String OPENAI_DEFAULT_MODEL    = "openai/gpt-4o";
+    private static final String ANTHROPIC_DEFAULT_MODEL = "anthropic/claude-3-5-sonnet";
+
     private final AgentProperties props;
 
     public LlmModelFactory(AgentProperties props) {
@@ -48,9 +54,13 @@ public class LlmModelFactory {
      * Call once at startup (from {@code ReviewAgent#rootAgent()}).
      */
     public String resolveModelString() {
-        String model   = props.getModel();
         String baseUrl = props.getProvider().getBaseUrl();
         String apiKey  = props.getProvider().getApiKey();
+
+        // Resolve the effective model. The one-word agent.provider.type wins:
+        // when agent.model is blank, we substitute the selected provider's
+        // default model so the whole stack switches from a single property.
+        String model = resolveModel(props);
 
         if (model.startsWith("ollama/")) {
             String base = baseUrl.isBlank() ? OLLAMA_DEFAULT_BASE : baseUrl;
@@ -75,6 +85,46 @@ public class LlmModelFactory {
         }
 
         return model;
+    }
+
+    // ── Provider resolution (shared with the embedding client) ────────────────
+
+    /** Normalized provider name: gemini | ollama | openai | anthropic. */
+    public static String resolveProvider(AgentProperties props) {
+        String type = props.getProvider().getType();
+        if (type != null && !type.isBlank()) {
+            return switch (type.trim().toLowerCase()) {
+                case "ollama"    -> "ollama";
+                case "openai"    -> "openai";
+                case "anthropic" -> "anthropic";
+                default          -> "gemini";
+            };
+        }
+        // Backwards-compatible fallback: infer from the agent.model prefix.
+        String model = props.getModel();
+        if (model != null) {
+            if (model.startsWith("ollama/"))    return "ollama";
+            if (model.startsWith("openai/"))    return "openai";
+            if (model.startsWith("anthropic/")) return "anthropic";
+        }
+        return "gemini";
+    }
+
+    /**
+     * The effective chat model string. Honors an explicit agent.model; otherwise
+     * returns the default model for the selected provider.
+     */
+    public static String resolveModel(AgentProperties props) {
+        String model = props.getModel();
+        if (model != null && !model.isBlank()) {
+            return model.trim();
+        }
+        return switch (resolveProvider(props)) {
+            case "ollama"    -> OLLAMA_DEFAULT_MODEL;
+            case "openai"    -> OPENAI_DEFAULT_MODEL;
+            case "anthropic" -> ANTHROPIC_DEFAULT_MODEL;
+            default          -> GEMINI_DEFAULT_MODEL;
+        };
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────

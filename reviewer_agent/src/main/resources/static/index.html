@@ -266,6 +266,57 @@
     .send-btn:active  { transform: scale(0.93); }
     .send-btn:disabled { background: #dadce0; cursor: not-allowed; }
     .send-btn svg { fill: #fff; width: 20px; height: 20px; }
+
+    /* Session-level Application ID bar (under header) */
+    .appid-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 16px;
+      background: #f8f9fa;
+      border-bottom: 1px solid #e8eaed;
+    }
+
+    .appid-bar label {
+      font-size: 13px;
+      font-weight: 500;
+      color: #444;
+      white-space: nowrap;
+    }
+
+    .appid-bar input {
+      border: 1px solid #dadce0;
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 13px;
+      font-family: inherit;
+      outline: none;
+      width: 180px;
+      transition: border-color 0.15s;
+    }
+
+    .appid-bar input:focus { border-color: #1a73e8; }
+    .appid-bar input::placeholder { color: #9aa0a6; }
+
+    .appid-bar button {
+      background: #1a73e8; color: #fff;
+      border: none; border-radius: 8px;
+      padding: 7px 16px; font-size: 13px; font-weight: 500;
+      cursor: pointer; transition: background 0.15s;
+      white-space: nowrap;
+    }
+
+    .appid-bar button:hover { background: #1557b0; }
+
+    .appid-bar .assigned {
+      font-size: 12px;
+      color: #188038;
+      font-weight: 500;
+      margin-left: auto;
+      white-space: nowrap;
+    }
+
+    .appid-bar .assigned.none { color: #9aa0a6; font-weight: 400; }
   </style>
 </head>
 <body>
@@ -282,12 +333,20 @@
     <div class="status-dot" title="Online"></div>
   </div>
 
+  <!-- Session-level Application ID -->
+  <div class="appid-bar">
+    <label for="sessionAppIdInput">Application ID</label>
+    <input type="text" id="sessionAppIdInput" placeholder="e.g. APP-001" />
+    <button id="assignAppIdBtn" onclick="assignApplicationId()">Assign</button>
+    <span id="appIdAssigned" class="assigned none">No application assigned</span>
+  </div>
+
   <!-- Messages -->
   <div class="chat-messages" id="chatMessages">
     <div class="welcome-card">
       <h2>Welcome 👋</h2>
-      <p>Attach a document and enter an Application ID below,<br/>
-         then click Send to extract and read it.</p>
+      <p>Assign an Application ID at the top, then chat — every message<br/>
+         uses that application's documents. Leave it blank for a normal chat.</p>
     </div>
   </div>
 
@@ -310,9 +369,6 @@
       </label>
       <input type="file" id="fileInput" accept="*/*" style="display:none"
              onchange="onFileSelected(this)" />
-
-      <input type="text" id="applicationIdInput" class="app-id-input"
-             placeholder="Application ID" />
 
       <span id="fileStatus" class="file-status">No file selected</span>
     </div>
@@ -340,9 +396,56 @@
   const suggestions  = document.getElementById('suggestions');
   const fileStatus   = document.getElementById('fileStatus');
 
-  const userId           = 'user-' + Math.random().toString(36).substring(2, 10);
-  let   currentSessionId = null;
-  let   pendingFile      = null; // file staged for upload on Send
+  const userId               = 'user-' + Math.random().toString(36).substring(2, 10);
+  let   currentSessionId     = null;
+  let   pendingFile          = null;   // file staged for upload on Send
+  let   sessionApplicationId = '';     // applicationId assigned to this chat session
+
+  // ── Assign an Application ID to the whole chat session ────────────────────
+  async function assignApplicationId() {
+    const val   = document.getElementById('sessionAppIdInput').value.trim();
+    const badge = document.getElementById('appIdAssigned');
+    sessionApplicationId = val;
+
+    if (!val) {
+      badge.textContent = 'No application assigned';
+      badge.className   = 'assigned none';
+      return;
+    }
+
+    // Assigned — now look up how many documents are indexed for this application.
+    badge.className   = 'assigned';
+    badge.textContent = '✓ Assigned: ' + val + ' · checking documents…';
+
+    try {
+      const res = await fetch('/api/documents/' + encodeURIComponent(val));
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+
+      const docs      = await res.json();
+      const total     = Array.isArray(docs) ? docs.length : 0;
+      const indexed   = docs.filter(d => d.status === 'INDEXED').length;
+
+      badge.textContent = `✓ ${val} · ${indexed} indexed`
+                        + (total > indexed ? ` (${total} total)` : '');
+
+      if (total === 0) {
+        appendMessage('agent',
+          `Application "${val}" is assigned, but no documents are indexed for it yet. ` +
+          `Upload or ingest a document for this application first.`);
+      } else {
+        appendMessage('agent',
+          `Application "${val}" is assigned. ${indexed} document(s) indexed for this application` +
+          (total > indexed ? ` (${total - indexed} still processing/failed).` : '.') +
+          ` All messages will use it.`);
+      }
+    } catch (err) {
+      // Assignment still stands even if the count lookup fails.
+      badge.textContent = '✓ Assigned: ' + val + ' · count unavailable';
+      appendMessage('agent',
+        `Application "${val}" is assigned, but I couldn't fetch the indexed document count ` +
+        `(is the server reachable?).`, true);
+    }
+  }
 
   // ── File selected — stage it, don't upload yet ───────────────────────────
   function onFileSelected(input) {
@@ -359,7 +462,7 @@
   // ── Send — upload file (if any) then send message ────────────────────────
   async function sendMessage() {
     const text          = userInput.value.trim();
-    const applicationId = document.getElementById('applicationIdInput').value.trim();
+    const applicationId = sessionApplicationId;  // assigned once at the top of the session
 
     // Must have either a file or a message
     if (!pendingFile && !text) return;
@@ -442,7 +545,7 @@
         const res = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId, sessionId: currentSessionId, message })
+          body: JSON.stringify({ userId, sessionId: currentSessionId, applicationId, message })
         });
 
         removeTyping();

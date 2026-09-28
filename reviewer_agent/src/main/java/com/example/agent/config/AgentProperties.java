@@ -25,13 +25,24 @@ public class AgentProperties {
     private Context  context  = new Context();
     private Vector   vector   = new Vector();
     private Scoring  scoring  = new Scoring();
+    private Ingest   ingest   = new Ingest();
 
     // ── Nested config classes ────────────────────────────────────────────────
 
     public static class Provider {
+        /**
+         * Single-word provider switch: {@code gemini} or {@code ollama}
+         * (also accepts {@code openai} / {@code anthropic}). Changing this one
+         * value reconfigures the LLM model, the embedding model, the base URL,
+         * and the vector dimension together. When blank, the provider is inferred
+         * from the {@code agent.model} prefix for backwards compatibility.
+         */
+        private String type;
         private String baseUrl;
         private String apiKey;
 
+        public String getType()                { return type; }
+        public void   setType(String v)        { this.type = v; }
         public String getBaseUrl()             { return baseUrl; }
         public void   setBaseUrl(String v)     { this.baseUrl = v; }
         public String getApiKey()              { return apiKey; }
@@ -54,6 +65,7 @@ public class AgentProperties {
         private int     port;
         private String  collection;
         private int     dimension;
+        private boolean recreateOnStartup;
 
         public boolean isEnabled()           { return enabled; }
         public void    setEnabled(boolean v) { this.enabled = v; }
@@ -65,6 +77,8 @@ public class AgentProperties {
         public void    setCollection(String v) { this.collection = v; }
         public int     getDimension()        { return dimension; }
         public void    setDimension(int v)   { this.dimension = v; }
+        public boolean isRecreateOnStartup()        { return recreateOnStartup; }
+        public void    setRecreateOnStartup(boolean v) { this.recreateOnStartup = v; }
     }
 
     public static class Scoring {
@@ -78,6 +92,25 @@ public class AgentProperties {
         public void   setTimeoutSeconds(int v)   { this.timeoutSeconds = v; }
         public int    getRetryAttempts()         { return retryAttempts; }
         public void   setRetryAttempts(int v)    { this.retryAttempts = v; }
+    }
+
+    public static class Ingest {
+        private boolean enabled;
+        private boolean runOnStartup;
+        private String  sourceUrl;
+        private String  sourceDir;
+        private String  applicationId;
+
+        public boolean isEnabled()             { return enabled; }
+        public void    setEnabled(boolean v)   { this.enabled = v; }
+        public boolean isRunOnStartup()        { return runOnStartup; }
+        public void    setRunOnStartup(boolean v) { this.runOnStartup = v; }
+        public String  getSourceUrl()          { return sourceUrl; }
+        public void    setSourceUrl(String v)  { this.sourceUrl = v; }
+        public String  getSourceDir()          { return sourceDir; }
+        public void    setSourceDir(String v)  { this.sourceDir = v; }
+        public String  getApplicationId()      { return applicationId; }
+        public void    setApplicationId(String v) { this.applicationId = v; }
     }
 
     // ── Getters / Setters ────────────────────────────────────────────────────
@@ -105,4 +138,32 @@ public class AgentProperties {
 
     public Scoring  getScoring()             { return scoring; }
     public void     setScoring(Scoring v)    { this.scoring = v; }
+
+    public Ingest   getIngest()              { return ingest; }
+    public void     setIngest(Ingest v)      { this.ingest = v; }
+
+    // ── Derived config ────────────────────────────────────────────────────────
+
+    /** Default embedding dimensions per provider. */
+    private static final int GEMINI_DIM = 3072;
+    private static final int OLLAMA_DIM = 768;
+    private static final int OPENAI_DIM = 1536;
+
+    /**
+     * The effective embedding/vector dimension. Honors an explicit
+     * {@code agent.vector.dimension} (> 0); otherwise derives it from the
+     * selected {@code agent.provider.type} so a single-word provider switch
+     * also fixes the Milvus collection dimension.
+     */
+    public int resolveVectorDimension() {
+        int configured = vector.getDimension();
+        if (configured > 0) {
+            return configured;
+        }
+        return switch (LlmModelFactory.resolveProvider(this)) {
+            case "ollama" -> OLLAMA_DIM;
+            case "openai" -> OPENAI_DIM;
+            default       -> GEMINI_DIM;
+        };
+    }
 }
