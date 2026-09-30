@@ -24,6 +24,7 @@ import jakarta.validation.constraints.NotEmpty;
         example = """
                 {
                   "reservationId": "RES-2026-000123",
+                  "cid": "CID-88421",
                   "questions": [
                     {
                       "question": "What is the total requested funding and over what period?",
@@ -41,6 +42,12 @@ public record SupplementalQuestionRequest(
                 requiredMode = Schema.RequiredMode.REQUIRED)
         @NotBlank(message = "reservationId must not be blank")
         String reservationId,
+
+        @Schema(description = "Logged-in user's identifier. When supplied, their personal "
+                + "knowledge base (registered via POST /api/users/{cid}/knowledge) is blended "
+                + "into the answer alongside the reservation context.",
+                example = "CID-88421", nullable = true)
+        String cid,
 
         @Schema(description = "The collection of questions to answer",
                 requiredMode = Schema.RequiredMode.REQUIRED)

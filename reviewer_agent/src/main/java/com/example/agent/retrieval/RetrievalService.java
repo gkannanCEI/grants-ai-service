@@ -1,7 +1,7 @@
 package com.example.agent.retrieval;
 
+import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -67,13 +67,32 @@ public class RetrievalService {
                 return RetrievalResult.empty();
             }
 
-            String contextBlock = hits.stream()
-                    .map(VectorDocument::content)
-                    .filter(c -> c != null && !c.isBlank())
-                    .collect(Collectors.joining("\n\n---\n\n"));
+            // Build a short, stable label per chunk (e.g. "remove-papular-dish.pdf#2") so the
+            // LLM can cite exactly which excerpt it used, and we can later resolve that label
+            // back to the real chunk text/metadata for a precise, non-hallucinated citation.
+            List<RetrievedChunk> chunks = new ArrayList<>(hits.size());
+            StringBuilder contextBuilder = new StringBuilder();
+            boolean first = true;
+            for (VectorDocument hit : hits) {
+                String content = hit.content();
+                if (content == null || content.isBlank()) {
+                    continue;
+                }
+                String fileName = hit.metadata() != null ? hit.metadata().get("fileName") : null;
+                String chunkIndex = hit.metadata() != null ? hit.metadata().get("chunkIndex") : null;
+                String label = buildLabel(fileName, chunkIndex, chunks.size());
 
-            log.info("Retrieved {} chunk(s) for applicationId={}", hits.size(), applicationId);
-            return new RetrievalResult(true, contextBlock, hits.size());
+                chunks.add(new RetrievedChunk(label, fileName, chunkIndex, content, hit.score()));
+
+                if (!first) {
+                    contextBuilder.append("\n\n---\n\n");
+                }
+                first = false;
+                contextBuilder.append('[').append(label).append("]\n").append(content);
+            }
+
+            log.info("Retrieved {} chunk(s) for applicationId={}", chunks.size(), applicationId);
+            return new RetrievalResult(!chunks.isEmpty(), contextBuilder.toString(), chunks.size(), chunks);
         } catch (Exception e) {
             // Never fail the chat turn because retrieval hit a problem.
             log.warn("Retrieval failed for applicationId={} — {}", applicationId, e.getMessage());
@@ -119,10 +138,34 @@ public class RetrievalService {
                 """.formatted(applicationId, applicationId, result.contextBlock(), question);
     }
 
+    /** Builds a short, human-readable label identifying a chunk, e.g. "invoice.pdf#2". */
+    private static String buildLabel(String fileName, String chunkIndex, int fallbackOrdinal) {
+        if (fileName != null && !fileName.isBlank()) {
+            return chunkIndex != null && !chunkIndex.isBlank()
+                    ? fileName + "#" + chunkIndex
+                    : fileName;
+        }
+        return "excerpt-" + fallbackOrdinal;
+    }
+
     /** Outcome of a retrieval attempt. */
-    public record RetrievalResult(boolean hasContext, String contextBlock, int chunkCount) {
+    public record RetrievalResult(boolean hasContext, String contextBlock, int chunkCount,
+                                   List<RetrievedChunk> chunks) {
+        public RetrievalResult(boolean hasContext, String contextBlock, int chunkCount) {
+            this(hasContext, contextBlock, chunkCount, java.util.List.of());
+        }
+
         public static RetrievalResult empty() {
-            return new RetrievalResult(false, "", 0);
+            return new RetrievalResult(false, "", 0, java.util.List.of());
         }
     }
+
+    /**
+     * A single retrieved chunk with enough provenance to build a precise citation later:
+     * the label cited in the prompt, its source file/chunk index, the exact chunk text
+     * (so any snippet shown to the reviewer is copied verbatim, never paraphrased by the
+     * LLM), and its similarity score.
+     */
+    public record RetrievedChunk(String label, String fileName, String chunkIndex,
+                                  String content, Float score) { }
 }

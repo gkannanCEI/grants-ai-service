@@ -317,8 +317,11 @@ public class AgentController {
             description = """
                     Answers a follow-up question about a reservation using its stored AI summary
                     and its indexed documents (retrieved via RAG, scoped to the reservation) as
-                    context. An optional hint guides how the question is interpreted. If the answer
-                    is not in the context, the agent says so rather than guessing.""")
+                    context. When an optional cid (logged-in user identifier) is supplied, that
+                    user's personal knowledge base — registered via POST /api/users/{cid}/knowledge —
+                    is blended in too, so the answer is personalized. An optional hint guides how
+                    the question is interpreted. If the answer is not in the context, the agent
+                    says so rather than guessing.""")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Answers produced from reservation context",
                     content = @Content(
@@ -332,7 +335,18 @@ public class AgentController {
                                           "answer": "The reservation requests $250,000 over an 18-month project timeline.",
                                           "usedSummary": true,
                                           "usedDocuments": true,
-                                          "documentChunks": 3
+                                          "documentChunks": 3,
+                                          "usedUserKnowledge": false,
+                                          "userKnowledgeChunks": 0
+                                        },
+                                        {
+                                          "question": "What contact method does this user prefer?",
+                                          "answer": "This user prefers email contact.",
+                                          "usedSummary": false,
+                                          "usedDocuments": false,
+                                          "documentChunks": 0,
+                                          "usedUserKnowledge": true,
+                                          "userKnowledgeChunks": 1
                                         }
                                       ]
                                     }"""))),
@@ -348,27 +362,28 @@ public class AgentController {
                             examples = @ExampleObject(name = "sample", value = """
                                     {
                                       "reservationId": "RES-2026-000123",
+                                      "cid": "CID-88421",
                                       "questions": [
                                         {
                                           "question": "What is the total requested funding and over what period?",
                                           "hint": "Look for the requested amount and the project timeline."
                                         },
                                         {
-                                          "question": "Who is the primary contact for this reservation?"
+                                          "question": "What contact method does this user prefer?"
                                         }
                                       ]
                                     }""")))
             @Valid @RequestBody SupplementalQuestionRequest request) {
 
-        log.info("POST /api/reservations/ask - reservationId={} questions={}",
-                request.reservationId(), request.questions().size());
+        log.info("POST /api/reservations/ask - reservationId={} cid={} questions={}",
+                request.reservationId(), request.cid(), request.questions().size());
 
         List<SupplementalQaService.Question> questions = request.questions().stream()
                 .map(q -> new SupplementalQaService.Question(q.question(), q.hint()))
                 .toList();
 
         List<SupplementalQaService.Answer> answers =
-                supplementalQaService.answerAll(request.reservationId(), questions);
+                supplementalQaService.answerAll(request.reservationId(), request.cid(), questions);
 
         return ResponseEntity.ok(
                 SupplementalAnswerResponse.from(request.reservationId(), answers));

@@ -28,14 +28,26 @@ import io.swagger.v3.oas.annotations.media.Schema;
                       "answer": "The reservation requests $250,000 over an 18-month project timeline.",
                       "usedSummary": true,
                       "usedDocuments": true,
-                      "documentChunks": 3
+                      "documentChunks": 3,
+                      "usedUserKnowledge": false,
+                      "userKnowledgeChunks": 0,
+                      "reasoning": "The funding amount and timeline are stated directly in the indexed document excerpt.",
+                      "sources": [
+                        { "type": "DOCUMENT", "label": "grant-application.pdf#2", "snippet": "Requested amount: $250,000 over 18 months." }
+                      ]
                     },
                     {
-                      "question": "Who is the primary contact for this reservation?",
-                      "answer": "The primary contact is Jane Doe (jane.doe@example.org).",
-                      "usedSummary": true,
+                      "question": "What contact method does this user prefer?",
+                      "answer": "This user prefers email contact.",
+                      "usedSummary": false,
                       "usedDocuments": false,
-                      "documentChunks": 0
+                      "documentChunks": 0,
+                      "usedUserKnowledge": true,
+                      "userKnowledgeChunks": 1,
+                      "reasoning": "The user's personal notes state their preferred contact method.",
+                      "sources": [
+                        { "type": "USER_KNOWLEDGE", "label": "personal-notes#1", "snippet": "Preferred contact: email only, no phone calls." }
+                      ]
                     }
                   ]
                 }"""
@@ -52,11 +64,16 @@ public record SupplementalAnswerResponse(
     /**
      * A single answer with provenance.
      *
-     * @param question       the question that was asked
-     * @param answer         the grounded answer
-     * @param usedSummary    whether the stored AI summary was available and used
-     * @param usedDocuments  whether indexed document excerpts were used
-     * @param documentChunks number of document chunks used as context
+     * @param question            the question that was asked
+     * @param answer              the grounded answer
+     * @param usedSummary         whether the stored AI summary was available and used
+     * @param usedDocuments       whether reservation document excerpts were used
+     * @param documentChunks      number of reservation document chunks used as context
+     * @param usedUserKnowledge   whether the logged-in user's personal knowledge base was used
+     * @param userKnowledgeChunks number of personal knowledge chunks used as context
+     * @param reasoning           short explanation of why this answer follows from the context,
+     *                            or null when the model reply wasn't structured
+     * @param sources             precise citations the answer was derived from
      */
     @Schema(name = "AnswerItem", description = "An answer to a single question, with provenance.")
     public record AnswerItem(
@@ -64,11 +81,34 @@ public record SupplementalAnswerResponse(
             String  answer,
             boolean usedSummary,
             boolean usedDocuments,
-            int     documentChunks
+            int     documentChunks,
+            boolean usedUserKnowledge,
+            int     userKnowledgeChunks,
+            String  reasoning,
+            List<SourceItem> sources
     ) {
         public static AnswerItem from(SupplementalQaService.Answer a) {
             return new AnswerItem(a.question(), a.answer(),
-                    a.usedSummary(), a.usedDocuments(), a.documentChunks());
+                    a.usedSummary(), a.usedDocuments(), a.documentChunks(),
+                    a.usedUserKnowledge(), a.userKnowledgeChunks(),
+                    a.reasoning(),
+                    a.sources() == null ? List.of()
+                            : a.sources().stream().map(SourceItem::from).toList());
+        }
+    }
+
+    /**
+     * A precise citation for one piece of context an answer relied on.
+     *
+     * @param type    where this came from: SUMMARY, DOCUMENT, USER_KNOWLEDGE, or HINT
+     * @param label   short identifier, e.g. "invoice.pdf#2" or "Reservation AI summary"
+     * @param snippet verbatim excerpt of the actual source text, or null when unavailable
+     */
+    @Schema(name = "SourceItem", description = "A precise citation for one piece of context "
+            + "an answer relied on.")
+    public record SourceItem(String type, String label, String snippet) {
+        public static SourceItem from(SupplementalQaService.SourceRef s) {
+            return new SourceItem(s.type(), s.label(), s.snippet());
         }
     }
 
