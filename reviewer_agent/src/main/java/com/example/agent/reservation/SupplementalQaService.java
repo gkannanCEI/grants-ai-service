@@ -65,12 +65,21 @@ public class SupplementalQaService {
             {
               "answer": "<the answer text>",
               "reasoning": "<one short sentence on why this answer follows from the context>",
+              "confidence": <integer from 0 to 10>,
               "sources": [
                 { "type": "SUMMARY" | "DOCUMENT" | "USER_KNOWLEDGE" | "HINT", "label": "<the bracketed label you relied on, or omit label for SUMMARY/HINT>" }
               ]
             }
             List every label you actually relied on in "sources". If nothing in the context was
             usable, return an empty "sources" array. Keep "reasoning" under 20 words.
+
+            "confidence" rates how well the context supports your answer, as a whole number:
+              9-10  the context states the answer explicitly and unambiguously
+              7-8   the answer follows directly from the context with minimal inference
+              4-6   the answer needs noticeable inference, or the context is partial/indirect
+              1-3   the context barely supports the answer, or sources conflict
+              0     the information is not available in the context
+            Be strict: do not rate above 6 unless a specific excerpt or summary line supports it.
             """;
 
     private final ReservationSummaryRepository summaryRepository;
@@ -145,7 +154,8 @@ public class SupplementalQaService {
                     "No context is available for reservation " + reservationId
                             + ". There is no stored summary, no indexed documents, and no "
                             + "personal knowledge to answer from.",
-                    false, false, 0, false, 0, null, List.of());
+                    false, false, 0, false, 0, null, List.of(),
+                    AnswerConfidenceScorer.MIN_SCORE);
         }
 
         String prompt = buildPrompt(reservationId, question, hint, summaryText,
@@ -169,10 +179,15 @@ public class SupplementalQaService {
 
         ParsedReply parsed = parseReply(rawReply, hint, chunksByLabel);
 
+        // Model's self-rating, capped by the strength of the citations we could verify.
+        int confidence = AnswerConfidenceScorer.score(parsed.modelConfidence(), parsed.sources());
+        log.debug("Supplemental QA confidence — question=\"{}\" modelRating={} final={}",
+                question, parsed.modelConfidence(), confidence);
+
         return new Answer(question, parsed.answer(),
                 summaryText != null, documentContext != null, retrieval.chunkCount(),
                 userContext != null, userRetrieval.chunkCount(),
-                parsed.reasoning(), parsed.sources());
+                parsed.reasoning(), parsed.sources(), confidence);
     }
 
     /**
@@ -188,13 +203,15 @@ public class SupplementalQaService {
             JsonNode root = mapper.readTree(cleaned);
             String answerText = root.path("answer").asText("").trim();
             if (answerText.isEmpty()) {
-                return new ParsedReply(rawReply.trim(), null, List.of());
+                return new ParsedReply(rawReply.trim(), null, List.of(), null);
             }
 
             String reasoning = root.path("reasoning").asText(null);
             if (reasoning != null && reasoning.isBlank()) {
                 reasoning = null;
             }
+
+            Integer modelConfidence = parseModelConfidence(root.path("confidence"));
 
             List<SourceRef> sources = new ArrayList<>();
             JsonNode sourcesNode = root.path("sources");
@@ -205,14 +222,42 @@ public class SupplementalQaService {
                     sources.add(resolveSource(type, label, hint, chunksByLabel));
                 }
             }
-            return new ParsedReply(answerText, reasoning, sources);
+            return new ParsedReply(answerText, reasoning, sources, modelConfidence);
         } catch (Exception e) {
             // Not valid JSON — treat the raw text as the answer, exactly like before this
-            // feature existed. Reviewers simply won't see a "Why?" expander for this answer.
+            // feature existed. Reviewers simply won't see a "Why?" expander for this answer,
+            // and the confidence score falls back to the (low) no-evidence cap.
             log.debug("Supplemental QA reply was not structured JSON, using as plain text: {}",
                     e.getMessage());
-            return new ParsedReply(rawReply.trim(), null, List.of());
+            return new ParsedReply(rawReply.trim(), null, List.of(), null);
         }
+    }
+
+    /**
+     * Reads the model's 0–10 self-rating. Accepts a JSON number or a numeric string
+     * (e.g. {@code 8}, {@code 8.4}, {@code "8"}), rounding decimals; anything else — missing,
+     * non-numeric, NaN — returns null so the scorer uses evidence alone.
+     */
+    private static Integer parseModelConfidence(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return null;
+        }
+        double value;
+        if (node.isNumber()) {
+            value = node.asDouble();
+        } else if (node.isTextual()) {
+            try {
+                value = Double.parseDouble(node.asText().trim());
+            } catch (NumberFormatException e) {
+                return null;
+            }
+        } else {
+            return null;
+        }
+        if (Double.isNaN(value) || Double.isInfinite(value)) {
+            return null;
+        }
+        return AnswerConfidenceScorer.clamp((int) Math.round(value));
     }
 
     /** Resolves a cited label back to a precise, verbatim snippet (never LLM-paraphrased). */
@@ -257,7 +302,8 @@ public class SupplementalQaService {
         return s.trim();
     }
 
-    private record ParsedReply(String answer, String reasoning, List<SourceRef> sources) { }
+    private record ParsedReply(String answer, String reasoning, List<SourceRef> sources,
+                               Integer modelConfidence) { }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -305,11 +351,13 @@ public class SupplementalQaService {
      * @param sources             precise citations the answer was derived from (each with a
      *                            type, a short label, and — where resolvable — a verbatim
      *                            snippet of the actual source text); empty when none apply
+     * @param confidence          0–10 score of how well the verified context supports this
+     *                            answer — see {@link AnswerConfidenceScorer}
      */
     public record Answer(String question, String answer,
                           boolean usedSummary, boolean usedDocuments, int documentChunks,
                           boolean usedUserKnowledge, int userKnowledgeChunks,
-                          String reasoning, List<SourceRef> sources) {
+                          String reasoning, List<SourceRef> sources, int confidence) {
     }
 
     /**

@@ -32,6 +32,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
                       "usedUserKnowledge": false,
                       "userKnowledgeChunks": 0,
                       "reasoning": "The funding amount and timeline are stated directly in the indexed document excerpt.",
+                      "confidence": 9,
                       "sources": [
                         { "type": "DOCUMENT", "label": "grant-application.pdf#2", "snippet": "Requested amount: $250,000 over 18 months." }
                       ]
@@ -45,6 +46,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
                       "usedUserKnowledge": true,
                       "userKnowledgeChunks": 1,
                       "reasoning": "The user's personal notes state their preferred contact method.",
+                      "confidence": 8,
                       "sources": [
                         { "type": "USER_KNOWLEDGE", "label": "personal-notes#1", "snippet": "Preferred contact: email only, no phone calls." }
                       ]
@@ -74,6 +76,7 @@ public record SupplementalAnswerResponse(
      * @param reasoning           short explanation of why this answer follows from the context,
      *                            or null when the model reply wasn't structured
      * @param sources             precise citations the answer was derived from
+     * @param confidence          0–10 score of how well the verified context supports the answer
      */
     @Schema(name = "AnswerItem", description = "An answer to a single question, with provenance.")
     public record AnswerItem(
@@ -85,7 +88,12 @@ public record SupplementalAnswerResponse(
             boolean usedUserKnowledge,
             int     userKnowledgeChunks,
             String  reasoning,
-            List<SourceItem> sources
+            List<SourceItem> sources,
+            @Schema(description = "0-10 score of how well the verified context supports the "
+                    + "answer: the model's self-rating capped by the strength of the citations "
+                    + "that could be verified against retrieved content",
+                    minimum = "0", maximum = "10", example = "8")
+            int     confidence
     ) {
         public static AnswerItem from(SupplementalQaService.Answer a) {
             return new AnswerItem(a.question(), a.answer(),
@@ -93,7 +101,8 @@ public record SupplementalAnswerResponse(
                     a.usedUserKnowledge(), a.userKnowledgeChunks(),
                     a.reasoning(),
                     a.sources() == null ? List.of()
-                            : a.sources().stream().map(SourceItem::from).toList());
+                            : a.sources().stream().map(SourceItem::from).toList(),
+                    a.confidence());
         }
     }
 
